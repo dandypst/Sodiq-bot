@@ -32,7 +32,7 @@ MIN_PAIRS_REQUIRED = 5
 # "limit"  → Place & cancel limit order (GTX post-only), aman
 # "market" → Buy & sell market order, volume cepat
 # "hybrid" → Campur keduanya (rekomendasi)
-BOT_MODE            = "hybrid"
+BOT_MODE = "market"
 HYBRID_MARKET_EVERY = 5
 
 # ── Order Size ────────────────────────────────────────────────
@@ -40,7 +40,7 @@ HYBRID_MARKET_EVERY = 5
 # Contoh: 0.02 = 2% dari saldo vUSDC per siklus
 # Bot akan hitung qty otomatis dari saldo aktual
 # Minimum tetap mengikuti minQuantity dari API
-ORDER_SIZE_PCT = 0.02   # 2% dari saldo vUSDC
+ORDER_SIZE_PCT = 0.005   # 0.5% per siklus
 
 # Maksimum USDC per order (safety cap) — set 0 untuk tidak ada limit
 ORDER_MAX_USDC = 50.0   # max 50 USDC per order
