@@ -46,7 +46,7 @@ ORDER_SIZE_PCT = 0.05   # 5% dari saldo vUSDC
 ORDER_MAX_USDC = 50.0   # max 50 USDC per order
 
 # ── Limit Order Settings ──────────────────────────────────────
-PRICE_OFFSET_TICKS = 50
+PRICE_OFFSET_TICKS = 100
 TIME_IN_FORCE      = 1   # 1=GTC, 2=IOC, 3=GTX (post-only)
 
 # ── Market Order Settings ─────────────────────────────────────
