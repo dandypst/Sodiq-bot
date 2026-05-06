@@ -195,8 +195,9 @@ def calc_min_quantity(symbol_info: dict) -> str:
         min_qty   = float(symbol_info.get("minQuantity",  "0"))
         step_size = float(symbol_info.get("stepSize",     "0.001"))
         qty_prec  = int(symbol_info.get("quantityPrecision", 3))
-        qty       = max(min_qty, step_size) if min_qty > 0 else step_size
-        return str(round(qty, qty_prec))
+        qty       = max(min_qty, step_size)
+        qty       = round(qty, qty_prec)
+        return f"{qty:.{qty_prec}f}"
     except Exception as e:
         log.error(f"calc_min_quantity: {e}")
         return None
