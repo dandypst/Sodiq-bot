@@ -8,7 +8,7 @@ load_dotenv()
 
 # ── Kredensial (dari file .env) ───────────────────────────────
 PRIVATE_KEY    = os.getenv("PRIVATE_KEY")
-WALLET_ADDRESS = os.getenv("WALLET_ADDRESS", "").lower().strip()
+WALLET_ADDRESS = os.getenv("WALLET_ADDRESS", "").strip()
 
 # ── Network ───────────────────────────────────────────────────
 TESTNET_CHAIN_ID = 138565
