@@ -22,7 +22,7 @@ from config import (
 from api import (
     get_symbols, get_orderbook, get_tickers,
     get_balances, get_account_id,
-    place_batch_orders, cancel_batch_orders,
+    place_order, cancel_order,
 )
 
 logging.basicConfig(
@@ -181,7 +181,10 @@ def calc_limit_price(orderbook: dict, side: str) -> str:
 
 
 def calc_quantity(symbol_info: dict, last_price: float) -> str:
-    """Hitung qty dari persentase saldo USDC, format desimal biasa."""
+    """
+    Hitung qty dari persentase saldo USDC.
+    Format tanpa trailing zeros dan tanpa scientific notation.
+    """
     try:
         step_size = float(symbol_info.get("stepSize",    "0.001"))
         min_qty   = float(symbol_info.get("minQuantity", "0"))
@@ -198,9 +201,10 @@ def calc_quantity(symbol_info: dict, last_price: float) -> str:
             if min_qty > 0 and qty < min_qty:
                 qty = min_qty
 
+        # Strip trailing zeros tapi jangan pakai scientific notation
         formatted = f"{qty:.{qty_prec}f}".rstrip("0").rstrip(".")
         if not formatted or float(formatted) <= 0:
-            formatted = f"{qty:.{qty_prec}f}"
+            formatted = f"{min_qty:.{qty_prec}f}".rstrip("0").rstrip(".")
         return formatted
 
     except Exception as e:
@@ -237,42 +241,60 @@ def trade_limit(symbol: str, all_symbols: list, cycle: int) -> bool:
         return False
 
     log.info(f"    📋 buy={buy_price} sell={sell_price} qty={qty} "
-             f"symbolID={sym_id} (saldo={USDC_BALANCE:.2f} × {ORDER_SIZE_PCT*100:.0f}%)")
+             f"(saldo={USDC_BALANCE:.2f} × {ORDER_SIZE_PCT*100:.0f}%)")
 
     buy_id  = make_order_id("LB")
     sell_id = make_order_id("LS")
 
-    # Order items: clOrdID, modifier, side, type, timeInForce, price, quantity
-    # (sesuai Go struct order — tanpa symbolID di item)
-    orders = [
-        {"clOrdID": buy_id,  "modifier": 1, "side": 1, "type": 1,
-         "timeInForce": TIME_IN_FORCE, "price": buy_price,  "quantity": qty},
-        {"clOrdID": sell_id, "modifier": 1, "side": 2, "type": 1,
-         "timeInForce": TIME_IN_FORCE, "price": sell_price, "quantity": qty},
-    ]
+    # Place BUY limit order
+    buy_result = place_order(
+        ACCOUNT_ID, sym_id, buy_id,
+        side=1, order_type=1, time_in_force=TIME_IN_FORCE,
+        price=buy_price, quantity=qty
+    )
+    buy_order_id = None
+    if buy_result.get("orderID"):
+        buy_order_id = buy_result["orderID"]
+        log.info(f"    ✓ [LIMIT] BUY  {buy_id}  orderID={buy_order_id}")
+    else:
+        log.warning(f"    ✗ [LIMIT] BUY gagal")
 
-    results = place_batch_orders(ACCOUNT_ID, sym_id, orders)
-    placed  = []
-    for r in results:
-        if r.get("code") == 0:
-            placed.append(r["clOrdID"])
-            log.info(f"    ✓ [LIMIT] {r['clOrdID']}  orderID={r.get('orderID')}")
-        else:
-            log.warning(f"    ✗ [LIMIT] {r.get('clOrdID')}: {r.get('error')}")
+    # Place SELL limit order
+    sell_result = place_order(
+        ACCOUNT_ID, sym_id, sell_id,
+        side=2, order_type=1, time_in_force=TIME_IN_FORCE,
+        price=sell_price, quantity=qty
+    )
+    sell_order_id = None
+    if sell_result.get("orderID"):
+        sell_order_id = sell_result["orderID"]
+        log.info(f"    ✓ [LIMIT] SELL {sell_id}  orderID={sell_order_id}")
+    else:
+        log.warning(f"    ✗ [LIMIT] SELL gagal")
 
-    if not placed:
+    if not buy_order_id and not sell_order_id:
         return False
 
+    # Tahan order
     hold = random.uniform(ORDER_HOLD_MIN, ORDER_HOLD_MAX)
     log.info(f"    ⏳ Hold {hold:.1f}s lalu cancel...")
     time.sleep(hold)
 
-    cancel_results = cancel_batch_orders(ACCOUNT_ID, sym_id, placed)
-    for r in cancel_results:
-        if r.get("code") == 0:
-            log.info(f"    ✓ Cancelled {r.get('origClOrdID')}")
+    # Cancel BUY
+    if buy_order_id:
+        res = cancel_order(ACCOUNT_ID, sym_id, buy_id, buy_order_id)
+        if res:
+            log.info(f"    ✓ Cancelled BUY {buy_id}")
         else:
-            log.info(f"    ℹ Sudah terisi: {r.get('clOrdID')}")
+            log.info(f"    ℹ BUY sudah terisi: {buy_id}")
+
+    # Cancel SELL
+    if sell_order_id:
+        res = cancel_order(ACCOUNT_ID, sym_id, sell_id, sell_order_id)
+        if res:
+            log.info(f"    ✓ Cancelled SELL {sell_id}")
+        else:
+            log.info(f"    ℹ SELL sudah terisi: {sell_id}")
 
     return True
 
@@ -312,39 +334,33 @@ def trade_market(symbol: str, all_symbols: list, cycle: int) -> bool:
     usdc_val = float(qty) * last_price
     log.info(f"    💸 [MARKET] BUY {qty} {symbol}  ~{usdc_val:.2f} USDC")
 
-    buy_order = {"clOrdID": make_order_id("MB"), "modifier": 1,
-                 "side": 1, "type": 2, "timeInForce": 2, "quantity": qty}
-    if buy_price_limit:
-        buy_order["price"] = buy_price_limit
+    buy_result = place_order(
+        ACCOUNT_ID, sym_id, make_order_id("MB"),
+        side=1, order_type=2, time_in_force=2,
+        price=buy_price_limit, quantity=qty
+    )
 
-    buy_results = place_batch_orders(ACCOUNT_ID, sym_id, [buy_order])
-    buy_ok = False
-    for r in buy_results:
-        if r.get("code") == 0:
-            log.info(f"    ✓ BUY filled  orderID={r.get('orderID')}")
-            buy_ok = True
-        else:
-            log.warning(f"    ✗ BUY gagal: {r.get('error')}")
-
-    if not buy_ok:
+    if not buy_result.get("orderID"):
+        log.warning(f"    ✗ BUY gagal")
         return False
+
+    log.info(f"    ✓ BUY filled  orderID={buy_result['orderID']}")
 
     pause = random.uniform(2, 8)
     log.info(f"    ⏳ Jeda {pause:.1f}s sebelum SELL...")
     time.sleep(pause)
 
     log.info(f"    💸 [MARKET] SELL {qty} {symbol}")
-    sell_order = {"clOrdID": make_order_id("MS"), "modifier": 1,
-                  "side": 2, "type": 2, "timeInForce": 2, "quantity": qty}
-    if sel_price_limit:
-        sell_order["price"] = sel_price_limit
+    sell_result = place_order(
+        ACCOUNT_ID, sym_id, make_order_id("MS"),
+        side=2, order_type=2, time_in_force=2,
+        price=sel_price_limit, quantity=qty
+    )
 
-    sell_results = place_batch_orders(ACCOUNT_ID, sym_id, [sell_order])
-    for r in sell_results:
-        if r.get("code") == 0:
-            log.info(f"    ✓ SELL filled  orderID={r.get('orderID')}")
-        else:
-            log.warning(f"    ✗ SELL gagal: {r.get('error')}")
+    if sell_result.get("orderID"):
+        log.info(f"    ✓ SELL filled  orderID={sell_result['orderID']}")
+    else:
+        log.warning(f"    ✗ SELL gagal")
 
     log.info(f"    📊 Volume ~{float(qty) * last_price * 2:.2f} USDC")
     return True
