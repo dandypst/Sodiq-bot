@@ -40,14 +40,14 @@ HYBRID_MARKET_EVERY = 5
 # Contoh: 0.02 = 2% dari saldo vUSDC per siklus
 # Bot akan hitung qty otomatis dari saldo aktual
 # Minimum tetap mengikuti minQuantity dari API
-ORDER_SIZE_PCT = 0.05   # 5% dari saldo vUSDC
+ORDER_SIZE_PCT = 0.02   # 2% dari saldo vUSDC
 
 # Maksimum USDC per order (safety cap) — set 0 untuk tidak ada limit
 ORDER_MAX_USDC = 50.0   # max 50 USDC per order
 
 # ── Limit Order Settings ──────────────────────────────────────
-PRICE_OFFSET_TICKS = 100
-TIME_IN_FORCE      = 1   # 1=GTC, 2=IOC, 3=GTX (post-only)
+PRICE_OFFSET_TICKS = 100  # Jauh dari pasar supaya tidak terisi
+TIME_IN_FORCE      = 1   # 1=GTC, 2=IOC, 3=GTX
 
 # ── Market Order Settings ─────────────────────────────────────
 MARKET_SLIPPAGE_RATIO = 0.02   # 2% slippage tolerance
