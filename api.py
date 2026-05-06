@@ -4,7 +4,7 @@
 import logging
 import requests
 from config import BASE_URL, WALLET_ADDRESS
-from signer import signed_headers
+from signer import make_signed_headers
 
 log            = logging.getLogger(__name__)
 PUBLIC_HEADERS = {"Accept": "application/json"}
@@ -13,13 +13,9 @@ PUBLIC_HEADERS = {"Accept": "application/json"}
 # ── Market Data ───────────────────────────────────────────────
 
 def get_symbols() -> list:
-    """Ambil semua symbol trading yang tersedia."""
     try:
-        r = requests.get(
-            f"{BASE_URL}/markets/symbols",
-            headers=PUBLIC_HEADERS,
-            timeout=10
-        )
+        r = requests.get(f"{BASE_URL}/markets/symbols",
+                         headers=PUBLIC_HEADERS, timeout=10)
         d = r.json()
         if d.get("code") == 0:
             return d.get("data", [])
@@ -29,14 +25,10 @@ def get_symbols() -> list:
 
 
 def get_orderbook(symbol: str, limit: int = 5) -> dict:
-    """Ambil orderbook untuk menentukan harga limit order."""
     try:
-        r = requests.get(
-            f"{BASE_URL}/markets/{symbol}/orderbook",
-            params={"limit": limit},
-            headers=PUBLIC_HEADERS,
-            timeout=10
-        )
+        r = requests.get(f"{BASE_URL}/markets/{symbol}/orderbook",
+                         params={"limit": limit},
+                         headers=PUBLIC_HEADERS, timeout=10)
         d = r.json()
         if d.get("code") == 0:
             return d.get("data")
@@ -46,15 +38,10 @@ def get_orderbook(symbol: str, limit: int = 5) -> dict:
 
 
 def get_tickers(symbol: str = None) -> list:
-    """Ambil data ticker 24h."""
     try:
         params = {"symbol": symbol} if symbol else {}
-        r = requests.get(
-            f"{BASE_URL}/markets/tickers",
-            params=params,
-            headers=PUBLIC_HEADERS,
-            timeout=10
-        )
+        r = requests.get(f"{BASE_URL}/markets/tickers",
+                         params=params, headers=PUBLIC_HEADERS, timeout=10)
         d = r.json()
         if d.get("code") == 0:
             return d.get("data", [])
@@ -66,13 +53,9 @@ def get_tickers(symbol: str = None) -> list:
 # ── Account ───────────────────────────────────────────────────
 
 def get_account_state() -> dict:
-    """Ambil state akun lengkap — termasuk accountID yang benar."""
     try:
-        r = requests.get(
-            f"{BASE_URL}/accounts/{WALLET_ADDRESS}/state",
-            headers=PUBLIC_HEADERS,
-            timeout=10
-        )
+        r = requests.get(f"{BASE_URL}/accounts/{WALLET_ADDRESS}/state",
+                         headers=PUBLIC_HEADERS, timeout=10)
         d = r.json()
         if d.get("code") == 0:
             return d.get("data")
@@ -82,38 +65,26 @@ def get_account_state() -> dict:
 
 
 def get_account_id() -> int:
-    """
-    Fetch accountID yang benar dari API.
-    API SoDEX tidak menerima accountID=0 — harus pakai ID asli dari akun.
-    """
     state = get_account_state()
     if not state:
         return None
-
-    # Coba beberapa kemungkinan field name
-    for field in ["aid", "accountID", "account_id", "id", "accountId"]:
-        if field in state:
-            return int(state[field])
-
-    # Kalau state adalah list (multiple accounts), ambil yang pertama
+    if isinstance(state, dict):
+        for field in ["aid", "accountID", "account_id", "id", "accountId", "uid"]:
+            if field in state and state[field] and int(state[field]) > 0:
+                return int(state[field])
     if isinstance(state, list) and state:
         first = state[0]
-        for field in ["aid", "accountID", "account_id", "id", "accountId"]:
-            if field in first:
+        for field in ["aid", "accountID", "account_id", "id", "accountId", "uid"]:
+            if field in first and first[field] and int(first[field]) > 0:
                 return int(first[field])
-
-    log.warning(f"accountID tidak ditemukan di state. Keys: {list(state.keys()) if isinstance(state, dict) else type(state)}")
+    log.warning(f"accountID tidak ditemukan. Keys: {list(state.keys()) if isinstance(state, dict) else type(state)}")
     return None
 
 
 def get_balances() -> dict:
-    """Ambil saldo spot akun."""
     try:
-        r = requests.get(
-            f"{BASE_URL}/accounts/{WALLET_ADDRESS}/balances",
-            headers=PUBLIC_HEADERS,
-            timeout=10
-        )
+        r = requests.get(f"{BASE_URL}/accounts/{WALLET_ADDRESS}/balances",
+                         headers=PUBLIC_HEADERS, timeout=10)
         d = r.json()
         if d.get("code") == 0:
             return d.get("data")
@@ -123,15 +94,10 @@ def get_balances() -> dict:
 
 
 def get_open_orders(symbol: str = None) -> list:
-    """Ambil semua open order."""
     try:
         params = {"symbol": symbol} if symbol else {}
-        r = requests.get(
-            f"{BASE_URL}/accounts/{WALLET_ADDRESS}/orders",
-            params=params,
-            headers=PUBLIC_HEADERS,
-            timeout=10
-        )
+        r = requests.get(f"{BASE_URL}/accounts/{WALLET_ADDRESS}/orders",
+                         params=params, headers=PUBLIC_HEADERS, timeout=10)
         d = r.json()
         if d.get("code") == 0:
             return d.get("data", {}).get("orders", [])
@@ -142,35 +108,50 @@ def get_open_orders(symbol: str = None) -> list:
 
 # ── Trading ───────────────────────────────────────────────────
 
-def place_batch_orders(orders_payload: dict) -> list:
-    """Place batch orders."""
-    sign_payload = {"type": "newOrder", "params": orders_payload}
-    headers = signed_headers(sign_payload)
+def place_batch_orders(account_id: int, orders: list) -> list:
+    """
+    Place batch orders.
+    Sesuai docs: SymbolID ada di tiap order item, bukan di level batch.
+
+    orders: list of dict dengan keys:
+      symbolID, clOrdID, modifier, side, type, timeInForce, price, quantity
+    """
+    params = {
+        "accountID": account_id,
+        "orders":    orders,
+    }
+    headers, _ = make_signed_headers("newOrder", params)
     try:
         r = requests.post(
             f"{BASE_URL}/trade/orders/batch",
             headers=headers,
-            json=orders_payload,
+            json=params,
             timeout=15
         )
         d = r.json()
         if d.get("code") == 0:
             return d.get("data", [])
-        log.warning(f"place_batch_orders gagal: {d.get('error')}")
+        log.warning(f"place_batch_orders gagal: {d.get('error')} | raw: {r.text[:200]}")
     except Exception as e:
         log.error(f"place_batch_orders: {e}")
     return []
 
 
-def cancel_batch_orders(cancel_payload: dict) -> list:
-    """Cancel batch orders."""
-    sign_payload = {"type": "cancelOrder", "params": cancel_payload}
-    headers = signed_headers(sign_payload)
+def cancel_batch_orders(account_id: int, orders: list) -> list:
+    """
+    Cancel batch orders.
+    orders: list of dict dengan keys: symbolID, clOrdID
+    """
+    params = {
+        "accountID": account_id,
+        "orders":    orders,
+    }
+    headers, _ = make_signed_headers("cancelOrder", params)
     try:
         r = requests.delete(
             f"{BASE_URL}/trade/orders/batch",
             headers=headers,
-            json=cancel_payload,
+            json=params,
             timeout=15
         )
         d = r.json()
