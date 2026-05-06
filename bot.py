@@ -35,8 +35,8 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-ACCOUNT_ID    = None
-USDC_BALANCE  = 0.0   # Di-update setiap STATUS_PRINT_EVERY siklus
+ACCOUNT_ID   = None
+USDC_BALANCE = 0.0
 
 
 # ══════════════════════════════════════════════════════════════
@@ -55,23 +55,19 @@ def fetch_account_id() -> int:
             f"{BASE_URL}/accounts/{WALLET_ADDRESS}/state",
             headers={"Accept": "application/json"}, timeout=10
         )
-        log.warning(f"    Raw account state: {r.text[:500]}")
+        log.warning(f"    Raw state: {r.text[:300]}")
     except Exception as e:
-        log.error(f"    Fetch account state gagal: {e}")
+        log.error(f"    Fetch gagal: {e}")
     return None
 
 
 def fetch_usdc_balance() -> float:
-    """Ambil saldo vUSDC saat ini."""
     global USDC_BALANCE
     bal = get_balances()
     if not bal:
         return USDC_BALANCE
-
-    # Format balance dari field "B" di state API
     balances = bal.get("balances") or bal.get("B") or []
     for b in balances:
-        # Field bisa "coin"/"a" dan "total"/"t"
         coin  = b.get("coin") or b.get("a", "")
         total = b.get("total") or b.get("t", "0")
         if coin.upper() == QUOTE_ASSET.upper():
@@ -80,7 +76,6 @@ def fetch_usdc_balance() -> float:
             except ValueError:
                 pass
             break
-
     return USDC_BALANCE
 
 
@@ -167,10 +162,7 @@ def get_last_price(symbol: str) -> float:
 
 
 def calc_limit_price(orderbook: dict, side: str) -> str:
-    """
-    Harga dari orderbook adalah integer string ("81444").
-    Offset pakai unit integer langsung.
-    """
+    """Harga integer string sesuai format orderbook SoDEX."""
     try:
         if side == "BUY":
             bids = orderbook.get("bids", [])
@@ -189,43 +181,25 @@ def calc_limit_price(orderbook: dict, side: str) -> str:
 
 
 def calc_quantity(symbol_info: dict, last_price: float) -> str:
-    """
-    Hitung quantity berdasarkan ORDER_SIZE_PCT dari saldo vUSDC.
-    Contoh: saldo 950 USDC × 2% = 19 USDC → qty = 19 / harga_BTC
-
-    Tetap menghormati minQuantity dan stepSize dari API.
-    Format output: desimal biasa (bukan scientific notation).
-    """
+    """Hitung qty dari persentase saldo USDC, format desimal biasa."""
     try:
-        step_size = float(symbol_info.get("stepSize",     "0.001"))
-        min_qty   = float(symbol_info.get("minQuantity",  "0"))
+        step_size = float(symbol_info.get("stepSize",    "0.001"))
+        min_qty   = float(symbol_info.get("minQuantity", "0"))
         qty_prec  = int(symbol_info.get("quantityPrecision", 3))
 
         if last_price <= 0:
-            # Kalau tidak ada harga, pakai minQuantity saja
             qty = max(min_qty, step_size)
         else:
-            # Hitung dari persentase saldo
             usdc_to_use = USDC_BALANCE * ORDER_SIZE_PCT
-
-            # Terapkan cap maksimum
             if ORDER_MAX_USDC > 0:
                 usdc_to_use = min(usdc_to_use, ORDER_MAX_USDC)
-
-            qty = usdc_to_use / last_price
-
-            # Bulatkan ke stepSize terdekat (ke bawah)
-            qty = (qty // step_size) * step_size
+            qty = (usdc_to_use / last_price // step_size) * step_size
             qty = round(qty, qty_prec)
-
-            # Pastikan di atas minimum
             if min_qty > 0 and qty < min_qty:
                 qty = min_qty
 
-        # Format sebagai desimal biasa — hindari scientific notation
-        # Format desimal — strip trailing zero tapi jangan hapus semua desimal
+        # Format tanpa scientific notation, strip trailing zero
         formatted = f"{qty:.{qty_prec}f}".rstrip("0").rstrip(".")
-        # Pastikan masih valid (tidak jadi empty string atau "0")
         if not formatted or float(formatted) <= 0:
             formatted = f"{qty:.{qty_prec}f}"
         return formatted
@@ -250,44 +224,39 @@ def trade_limit(symbol: str, all_symbols: list, cycle: int) -> bool:
         log.warning(f"    Orderbook kosong: {symbol}")
         return False
 
-    # Ambil last price untuk kalkulasi qty
-    last_price = 0.0
+    # Ambil last price dari orderbook untuk kalkulasi qty
     asks = ob.get("asks", [])
     bids = ob.get("bids", [])
-    if asks:
-        last_price = float(asks[0][0])
-    elif bids:
-        last_price = float(bids[0][0])
+    last_price = float(asks[0][0]) if asks else (float(bids[0][0]) if bids else 0)
 
     buy_price  = calc_limit_price(ob, "BUY")
     sell_price = calc_limit_price(ob, "SELL")
     qty        = calc_quantity(sym_info, last_price)
+    sym_id     = get_symbol_id(sym_info)
 
     if not all([buy_price, sell_price, qty]):
         log.warning(f"    Tidak bisa hitung harga/qty: {symbol}")
         return False
 
     log.info(f"    📋 buy={buy_price} sell={sell_price} qty={qty} "
-             f"(saldo={USDC_BALANCE:.2f} USDC × {ORDER_SIZE_PCT*100:.0f}%)")
+             f"symbolID={sym_id} (saldo={USDC_BALANCE:.2f} × {ORDER_SIZE_PCT*100:.0f}%)")
 
     buy_id  = make_order_id("LB")
     sell_id = make_order_id("LS")
 
-    results = place_batch_orders({
-        "accountID": ACCOUNT_ID,
-        "symbolID":  get_symbol_id(sym_info),
-        "orders": [
-            {"clOrdID": buy_id,  "modifier": 1, "side": 1, "type": 1,
-             "timeInForce": TIME_IN_FORCE, "price": buy_price,  "quantity": qty},
-            {"clOrdID": sell_id, "modifier": 1, "side": 2, "type": 1,
-             "timeInForce": TIME_IN_FORCE, "price": sell_price, "quantity": qty},
-        ],
-    })
+    # Sesuai docs: SymbolID ada di tiap order item
+    orders = [
+        {"symbolID": sym_id, "clOrdID": buy_id,  "modifier": 1, "side": 1,
+         "type": 1, "timeInForce": TIME_IN_FORCE, "price": buy_price,  "quantity": qty},
+        {"symbolID": sym_id, "clOrdID": sell_id, "modifier": 1, "side": 2,
+         "type": 1, "timeInForce": TIME_IN_FORCE, "price": sell_price, "quantity": qty},
+    ]
 
-    placed = []
+    results = place_batch_orders(ACCOUNT_ID, orders)
+    placed  = []
     for r in results:
         if r.get("code") == 0:
-            placed.append(r["clOrdID"])
+            placed.append({"symbolID": sym_id, "clOrdID": r["clOrdID"]})
             log.info(f"    ✓ [LIMIT] {r['clOrdID']}  orderID={r.get('orderID')}")
         else:
             log.warning(f"    ✗ [LIMIT] {r.get('clOrdID')}: {r.get('error')}")
@@ -299,11 +268,7 @@ def trade_limit(symbol: str, all_symbols: list, cycle: int) -> bool:
     log.info(f"    ⏳ Hold {hold:.1f}s lalu cancel...")
     time.sleep(hold)
 
-    cancel_results = cancel_batch_orders({
-        "accountID": ACCOUNT_ID,
-        "symbolID":  get_symbol_id(sym_info),
-        "orders":    [{"clOrdID": oid} for oid in placed],
-    })
+    cancel_results = cancel_batch_orders(ACCOUNT_ID, placed)
     for r in cancel_results:
         if r.get("code") == 0:
             log.info(f"    ✓ Cancelled {r.get('origClOrdID')}")
@@ -335,29 +300,25 @@ def trade_market(symbol: str, all_symbols: list, cycle: int) -> bool:
         log.warning(f"    Tidak bisa ambil harga: {symbol}")
         return False
 
-    qty = calc_quantity(sym_info, last_price)
-    if not qty or float(qty) <= 0:
-        log.warning(f"    Qty tidak valid: {symbol} (price={last_price})")
-        return False
-
+    qty    = calc_quantity(sym_info, last_price)
     sym_id = get_symbol_id(sym_info)
 
-    # Slippage dalam integer
+    if not qty or float(qty) <= 0:
+        log.warning(f"    Qty tidak valid: {symbol}")
+        return False
+
     buy_price_limit = str(int(last_price * (1 + MARKET_SLIPPAGE_RATIO))) if MARKET_SLIPPAGE_RATIO else None
     sel_price_limit = str(int(last_price * (1 - MARKET_SLIPPAGE_RATIO))) if MARKET_SLIPPAGE_RATIO else None
 
     usdc_val = float(qty) * last_price
     log.info(f"    💸 [MARKET] BUY {qty} {symbol}  ~{usdc_val:.2f} USDC")
 
-    buy_order = {"clOrdID": make_order_id("MB"), "modifier": 1,
-                 "side": 1, "type": 2, "timeInForce": 2, "quantity": qty}
+    buy_order = {"symbolID": sym_id, "clOrdID": make_order_id("MB"),
+                 "modifier": 1, "side": 1, "type": 2, "timeInForce": 2, "quantity": qty}
     if buy_price_limit:
         buy_order["price"] = buy_price_limit
 
-    buy_results = place_batch_orders({
-        "accountID": ACCOUNT_ID, "symbolID": sym_id, "orders": [buy_order],
-    })
-
+    buy_results = place_batch_orders(ACCOUNT_ID, [buy_order])
     buy_ok = False
     for r in buy_results:
         if r.get("code") == 0:
@@ -374,15 +335,12 @@ def trade_market(symbol: str, all_symbols: list, cycle: int) -> bool:
     time.sleep(pause)
 
     log.info(f"    💸 [MARKET] SELL {qty} {symbol}")
-
-    sell_order = {"clOrdID": make_order_id("MS"), "modifier": 1,
-                  "side": 2, "type": 2, "timeInForce": 2, "quantity": qty}
+    sell_order = {"symbolID": sym_id, "clOrdID": make_order_id("MS"),
+                  "modifier": 1, "side": 2, "type": 2, "timeInForce": 2, "quantity": qty}
     if sel_price_limit:
         sell_order["price"] = sel_price_limit
 
-    sell_results = place_batch_orders({
-        "accountID": ACCOUNT_ID, "symbolID": sym_id, "orders": [sell_order],
-    })
+    sell_results = place_batch_orders(ACCOUNT_ID, [sell_order])
     for r in sell_results:
         if r.get("code") == 0:
             log.info(f"    ✓ SELL filled  orderID={r.get('orderID')}")
@@ -440,9 +398,9 @@ def print_status():
                 pass
     else:
         log.info("   (tidak bisa ambil balance)")
-    log.info(f"   Saldo aktif: {USDC_BALANCE:.4f} {QUOTE_ASSET}")
-    log.info(f"   Per order  : {USDC_BALANCE * ORDER_SIZE_PCT:.4f} {QUOTE_ASSET} "
-             f"({ORDER_SIZE_PCT*100:.0f}%)")
+    log.info(f"   Saldo aktif : {USDC_BALANCE:.4f} {QUOTE_ASSET}")
+    log.info(f"   Per order   : {USDC_BALANCE * ORDER_SIZE_PCT:.4f} "
+             f"{QUOTE_ASSET} ({ORDER_SIZE_PCT*100:.0f}%)")
     log.info("─" * 55)
 
 
@@ -470,29 +428,25 @@ def main():
         log.error("❌  WALLET_ADDRESS tidak ada di .env — berhenti.")
         return
 
-    # Fetch accountID
     ACCOUNT_ID = fetch_account_id()
     if ACCOUNT_ID is None:
         log.error("❌  Tidak bisa dapat accountID — berhenti.")
         return
 
-    # Ambil symbol list
     all_symbols = get_symbols()
     if not all_symbols:
         log.error("❌  Tidak bisa ambil symbol list.")
         return
     log.info(f"    Symbol list: {len(all_symbols)} symbols")
 
-    # Auto-detect trading pairs
     trading_pairs = detect_trading_pairs(all_symbols)
     if not trading_pairs:
-        log.error("❌  Tidak ada pair yang cocok. Cek TARGET_ASSETS di config.py.")
+        log.error("❌  Tidak ada pair yang cocok.")
         return
 
     log_symbol_mapping(trading_pairs)
     log.info(f"    Pairs aktif: {len(trading_pairs)}")
 
-    # Ambil saldo awal
     fetch_usdc_balance()
     print_status()
 
@@ -505,14 +459,13 @@ def main():
         log.info(f"\n{'='*55}")
         log.info(f"🔄  SIKLUS #{cycle}   —   {now}")
 
-        # Refresh symbol list berkala
         if cycle % SYMBOL_REFRESH_EVERY == 1 and cycle > 1:
             fresh = get_symbols()
             if fresh:
                 all_symbols   = fresh
                 trading_pairs = detect_trading_pairs(all_symbols)
                 log.info(f"    Refreshed: {len(all_symbols)} symbols, "
-                         f"{len(trading_pairs)} pairs aktif")
+                         f"{len(trading_pairs)} pairs")
 
         symbol = trading_pairs[pair_index % len(trading_pairs)]
         pair_index += 1
@@ -520,7 +473,6 @@ def main():
         ok = trade_pair(symbol, all_symbols, cycle)
         log.info(f"  {'✅' if ok else '⏭️ '}  {symbol}  {'selesai' if ok else 'diskip'}")
 
-        # Refresh saldo dan print status berkala
         if cycle % STATUS_PRINT_EVERY == 0:
             fetch_usdc_balance()
             print_status()
