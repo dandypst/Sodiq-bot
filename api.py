@@ -3,8 +3,8 @@
 # ============================================================
 import logging
 import requests
-from config import BASE_URL, WALLET_ADDRESS
-from signer import sign_new_order, sign_cancel_order
+from config import BASE_URL, WALLET_ADDRESS, TESTNET_CHAIN_ID
+from signer import make_headers
 
 log            = logging.getLogger(__name__)
 PUBLIC_HEADERS = {"Accept": "application/json"}
@@ -108,54 +108,72 @@ def get_open_orders(symbol: str = None) -> list:
 
 # ── Trading ───────────────────────────────────────────────────
 
-def place_batch_orders(account_id: int, symbol_id: int,
-                       orders: list) -> list:
+def place_order(account_id: int, symbol_id: int,
+                clord_id: str, side: int, order_type: int,
+                time_in_force: int, price: str = None,
+                quantity: str = None) -> dict:
     """
-    Place batch orders.
-    Sesuai docs:
-    - symbolID ada di level batch (bukan di tiap order item)
-    - HTTP body = params saja (tanpa wrapper type/params)
-    - Signing tetap pakai payload penuh {"type": "newOrder", "params": ...}
+    Place single spot order.
+    Sesuai docs: POST /trade/orders
+    Field order: accountID, symbolID, clOrdID, side, type, timeInForce, price, quantity
+    """
+    params = {
+        "accountID":   account_id,
+        "symbolID":    symbol_id,
+        "clOrdID":     clord_id,
+        "side":        side,
+        "type":        order_type,
+        "timeInForce": time_in_force,
+    }
+    if price is not None:
+        params["price"] = price
+    if quantity is not None:
+        params["quantity"] = quantity
 
-    orders: list of dict dengan keys (sesuai Go struct order):
-      clOrdID, modifier, side, type, timeInForce, price, quantity
-    """
-    body, headers = sign_new_order(account_id, symbol_id, orders)
+    headers, _ = make_headers("newOrder", params)
     try:
         r = requests.post(
-            f"{BASE_URL}/trade/orders/batch",
+            f"{BASE_URL}/trade/orders",
             headers=headers,
-            json=body,
+            json=params,
             timeout=15
         )
         d = r.json()
         if d.get("code") == 0:
-            return d.get("data", [])
-        log.warning(f"place_batch_orders gagal: {d.get('error')} | raw: {r.text[:200]}")
+            return d.get("data", {})
+        log.warning(f"place_order gagal: {d.get('error')} | {r.text[:200]}")
     except Exception as e:
-        log.error(f"place_batch_orders: {e}")
-    return []
+        log.error(f"place_order: {e}")
+    return {}
 
 
-def cancel_batch_orders(account_id: int, symbol_id: int,
-                        clord_ids: list) -> list:
+def cancel_order(account_id: int, symbol_id: int,
+                 clord_id: str, order_id: int = None) -> dict:
     """
-    Cancel batch orders.
-    clord_ids: list of clOrdID string yang mau di-cancel
+    Cancel single spot order.
+    Sesuai docs: DELETE /trade/orders
+    Field order: accountID, symbolID, clOrdID, orderID
     """
-    orders = [{"clOrdID": oid} for oid in clord_ids]
-    body, headers = sign_cancel_order(account_id, symbol_id, orders)
+    params = {
+        "accountID": account_id,
+        "symbolID":  symbol_id,
+        "clOrdID":   clord_id,
+    }
+    if order_id:
+        params["orderID"] = order_id
+
+    headers, _ = make_headers("cancelOrder", params)
     try:
         r = requests.delete(
-            f"{BASE_URL}/trade/orders/batch",
+            f"{BASE_URL}/trade/orders",
             headers=headers,
-            json=body,
+            json=params,
             timeout=15
         )
         d = r.json()
         if d.get("code") == 0:
-            return d.get("data", [])
-        log.warning(f"cancel_batch_orders gagal: {d.get('error')}")
+            return d.get("data", {})
+        log.warning(f"cancel_order gagal: {d.get('error')}")
     except Exception as e:
-        log.error(f"cancel_batch_orders: {e}")
-    return []
+        log.error(f"cancel_order: {e}")
+    return {}
