@@ -81,7 +81,6 @@ def signed_headers(payload: dict) -> dict:
     return {
         "Content-Type": "application/json",
         "Accept":       "application/json",
-        "X-API-Key":    WALLET_ADDRESS,
         "X-API-Sign":   typed_sig,
         "X-API-Nonce":  str(nonce),
     }
