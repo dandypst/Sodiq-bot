@@ -110,21 +110,23 @@ def get_open_orders(symbol: str = None) -> list:
 
 def place_order(account_id: int, symbol_id: int,
                 clord_id: str, side: int, order_type: int,
-                time_in_force: int, price: str = None,
+                time_in_force: int = None, price: str = None,
                 quantity: str = None) -> dict:
     """
     Place single spot order.
     Sesuai docs: POST /trade/orders
     Field order: accountID, symbolID, clOrdID, side, type, timeInForce, price, quantity
+    timeInForce tidak diperlukan untuk market order (type=2).
     """
     params = {
-        "accountID":   account_id,
-        "symbolID":    symbol_id,
-        "clOrdID":     clord_id,
-        "side":        side,
-        "type":        order_type,
-        "timeInForce": time_in_force,
+        "accountID": account_id,
+        "symbolID":  symbol_id,
+        "clOrdID":   clord_id,
+        "side":      side,
+        "type":      order_type,
     }
+    if time_in_force is not None:
+        params["timeInForce"] = time_in_force
     if price is not None:
         params["price"] = price
     if quantity is not None:
