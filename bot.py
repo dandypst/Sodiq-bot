@@ -223,7 +223,12 @@ def calc_quantity(symbol_info: dict, last_price: float) -> str:
                 qty = min_qty
 
         # Format sebagai desimal biasa — hindari scientific notation
-        return f"{qty:.{qty_prec}f}"
+        # Format desimal — strip trailing zero tapi jangan hapus semua desimal
+        formatted = f"{qty:.{qty_prec}f}".rstrip("0").rstrip(".")
+        # Pastikan masih valid (tidak jadi empty string atau "0")
+        if not formatted or float(formatted) <= 0:
+            formatted = f"{qty:.{qty_prec}f}"
+        return formatted
 
     except Exception as e:
         log.error(f"calc_quantity: {e}")
