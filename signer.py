@@ -11,7 +11,7 @@ import json
 import time
 from web3 import Web3
 from eth_account import Account
-from config import PRIVATE_KEY, WALLET_ADDRESS, TESTNET_CHAIN_ID
+from config import PRIVATE_KEY, WALLET_ADDRESS, TESTNET_CHAIN_ID, API_KEY_NAME
 
 
 def build_payload_json(action_type: str, params: dict) -> str:
@@ -156,6 +156,7 @@ def make_signed_headers(action_type: str, params: dict) -> tuple:
     headers   = {
         "Content-Type": "application/json",
         "Accept":       "application/json",
+        "X-API-Key":    API_KEY_NAME,
         "X-API-Sign":   typed_sig,
         "X-API-Nonce":  str(nonce),
     }
