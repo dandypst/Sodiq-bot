@@ -20,7 +20,7 @@ from config import (
 )
 from api import (
     get_symbols, get_orderbook, get_tickers,
-    get_balances, get_account_id, get_account_state,
+    get_balances, get_account_id,
     place_batch_orders, cancel_batch_orders,
 )
 
@@ -34,57 +34,30 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-# accountID global — di-fetch saat startup
 ACCOUNT_ID = None
 
 
 # ══════════════════════════════════════════════════════════════
-# ACCOUNT ID FETCH
+# ACCOUNT ID
 # ══════════════════════════════════════════════════════════════
 
 def fetch_account_id() -> int:
-    """
-    Fetch accountID yang benar dari API SoDEX.
-    Log struktur response lengkap untuk debugging kalau gagal.
-    """
+    import requests
     log.info("    Fetching accountID dari API...")
-
-    # Coba via get_account_id() di api.py dulu
     acc_id = get_account_id()
     if acc_id is not None:
         log.info(f"    accountID: {acc_id}")
         return acc_id
 
-    # Kalau gagal, log raw response untuk debugging
-    import requests
-    PUBLIC_HEADERS = {"Accept": "application/json"}
+    # Log raw response untuk debugging
     try:
         r = requests.get(
             f"{BASE_URL}/accounts/{WALLET_ADDRESS}/state",
-            headers=PUBLIC_HEADERS, timeout=10
+            headers={"Accept": "application/json"}, timeout=10
         )
-        import json
-        log.warning(f"    Raw account state response: {r.text[:500]}")
+        log.warning(f"    Raw account state: {r.text[:500]}")
     except Exception as e:
-        log.error(f"    Tidak bisa fetch account state: {e}")
-
-    # Fallback: coba endpoint lain
-    try:
-        r = requests.get(
-            f"{BASE_URL}/accounts/{WALLET_ADDRESS}",
-            headers=PUBLIC_HEADERS, timeout=10
-        )
-        log.warning(f"    Raw account response: {r.text[:500]}")
-        d = r.json()
-        data = d.get("data", {})
-        if isinstance(data, dict):
-            for field in ["accountID", "account_id", "id", "accountId"]:
-                if field in data:
-                    return int(data[field])
-    except Exception as e:
-        log.error(f"    Fallback account fetch gagal: {e}")
-
-    log.error("    ❌ Tidak bisa dapat accountID — cek log di atas")
+        log.error(f"    Fetch account state gagal: {e}")
     return None
 
 
@@ -102,16 +75,12 @@ def detect_trading_pairs(all_symbols: list) -> list:
 
     for asset in TARGET_ASSETS:
         found = None
-
-        # Match via baseCoin + quoteCoin
         for sym_name, sym_data in available.items():
             if (sym_data.get("baseCoin", "").upper() == asset.upper()
                     and sym_data.get("quoteCoin", "").upper() == QUOTE_ASSET.upper()
                     and sym_name not in used):
                 found = sym_name
                 break
-
-        # Fallback: partial match di nama
         if not found:
             for sym_name in available:
                 if (asset.upper() in sym_name.upper()
@@ -119,12 +88,10 @@ def detect_trading_pairs(all_symbols: list) -> list:
                         and sym_name not in used):
                     found = sym_name
                     break
-
         if found:
             matched.append(found)
             used.add(found)
 
-    # Fallback: semua pair TRADING dengan quoteCoin == QUOTE_ASSET
     if len(matched) < MIN_PAIRS_REQUIRED:
         log.warning(f"  Auto-detect dapat {len(matched)} pairs, fallback...")
         for sym_name, sym_data in available.items():
@@ -176,26 +143,48 @@ def get_last_price(symbol: str) -> float:
     return 0.0
 
 
-def round_to_precision(value: float, precision: int) -> str:
-    return str(round(value, precision))
+def format_price(raw_price: str) -> str:
+    """
+    Format harga sesuai yang diterima API SoDEX.
+    Orderbook mengembalikan integer string ("81444") — kirim balik sebagai integer string.
+    Kalau harga dari kalkulasi float, bulatkan ke integer.
+    """
+    try:
+        f = float(raw_price)
+        # Kalau angka >= 1 dan tidak punya desimal signifikan = integer
+        if f >= 1 and f == int(f):
+            return str(int(f))
+        # Kalau punya desimal, return as-is tapi strip trailing zeros
+        return str(f).rstrip("0").rstrip(".")
+    except Exception:
+        return str(raw_price)
 
 
 def calc_limit_price(orderbook: dict, side: str, symbol_info: dict) -> str:
-    tick   = float(symbol_info.get("tickSize", "0.01"))
-    prec   = int(symbol_info.get("pricePrecision", 2))
-    offset = tick * PRICE_OFFSET_TICKS
+    """
+    Hitung harga limit order di luar spread.
+    Harga dari API adalah integer string — offset pakai 1 tick = 1 unit integer.
+    """
     try:
         if side == "BUY":
             bids = orderbook.get("bids", [])
             if not bids:
                 return None
-            price = float(bids[0][0]) - offset
+            best = int(float(bids[0][0]))
+            # Pasang di bawah best bid sebanyak PRICE_OFFSET_TICKS
+            price = best - PRICE_OFFSET_TICKS
         else:
             asks = orderbook.get("asks", [])
             if not asks:
                 return None
-            price = float(asks[0][0]) + offset
-        return round_to_precision(max(price, tick), prec)
+            best = int(float(asks[0][0]))
+            # Pasang di atas best ask sebanyak PRICE_OFFSET_TICKS
+            price = best + PRICE_OFFSET_TICKS
+
+        if price <= 0:
+            return None
+        return str(price)
+
     except Exception as e:
         log.error(f"calc_limit_price: {e}")
         return None
@@ -207,7 +196,7 @@ def calc_min_quantity(symbol_info: dict) -> str:
         step_size = float(symbol_info.get("stepSize",     "0.001"))
         qty_prec  = int(symbol_info.get("quantityPrecision", 3))
         qty       = max(min_qty, step_size) if min_qty > 0 else step_size
-        return round_to_precision(qty, qty_prec)
+        return str(round(qty, qty_prec))
     except Exception as e:
         log.error(f"calc_min_quantity: {e}")
         return None
@@ -254,9 +243,7 @@ def trade_limit(symbol: str, all_symbols: list, cycle: int) -> bool:
         log.warning(f"    Tidak bisa hitung harga/qty: {symbol}")
         return False
 
-    if float(buy_price) <= 0 or float(sell_price) <= 0:
-        log.warning(f"    Harga tidak valid: buy={buy_price} sell={sell_price}")
-        return False
+    log.info(f"    📋 buy={buy_price} sell={sell_price} qty={qty}")
 
     buy_id  = make_order_id("LB")
     sell_id = make_order_id("LS")
@@ -328,14 +315,11 @@ def trade_market(symbol: str, all_symbols: list, cycle: int) -> bool:
         log.warning(f"    Qty tidak valid: {symbol} (price={last_price})")
         return False
 
-    price_prec = int(sym_info.get("pricePrecision", 2))
-    sym_id     = get_symbol_id(sym_info)
+    sym_id = get_symbol_id(sym_info)
 
-    buy_price_limit = None
-    if MARKET_SLIPPAGE_RATIO:
-        buy_price_limit = round_to_precision(
-            last_price * (1 + MARKET_SLIPPAGE_RATIO), price_prec
-        )
+    # Harga slippage untuk market order (tetap integer)
+    buy_price_limit = str(int(last_price * (1 + MARKET_SLIPPAGE_RATIO))) if MARKET_SLIPPAGE_RATIO else None
+    sel_price_limit = str(int(last_price * (1 - MARKET_SLIPPAGE_RATIO))) if MARKET_SLIPPAGE_RATIO else None
 
     log.info(f"    💸 [MARKET] BUY {qty} {symbol}  ~{MARKET_ORDER_USDC} USDC")
 
@@ -367,10 +351,8 @@ def trade_market(symbol: str, all_symbols: list, cycle: int) -> bool:
 
     sell_order = {"clOrdID": make_order_id("MS"), "modifier": 1,
                   "side": 2, "type": 2, "timeInForce": 2, "quantity": qty}
-    if MARKET_SLIPPAGE_RATIO:
-        sell_order["price"] = round_to_precision(
-            last_price * (1 - MARKET_SLIPPAGE_RATIO), price_prec
-        )
+    if sel_price_limit:
+        sell_order["price"] = sel_price_limit
 
     sell_results = place_batch_orders({
         "accountID": ACCOUNT_ID, "symbolID": sym_id, "orders": [sell_order],
@@ -455,15 +437,13 @@ def main():
         log.error("❌  WALLET_ADDRESS tidak ada di .env — berhenti.")
         return
 
-    # ── Fetch accountID ───────────────────────────────────────
+    # Fetch accountID
     ACCOUNT_ID = fetch_account_id()
     if ACCOUNT_ID is None:
         log.error("❌  Tidak bisa dapat accountID — berhenti.")
-        log.error("    Pastikan wallet sudah terdaftar di SoDEX testnet (login via browser dulu).")
         return
-    # ──────────────────────────────────────────────────────────
 
-    # Ambil symbol list dari API
+    # Ambil symbol list
     all_symbols = get_symbols()
     if not all_symbols:
         log.error("❌  Tidak bisa ambil symbol list.")
