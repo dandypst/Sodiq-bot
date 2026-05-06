@@ -91,14 +91,14 @@ def get_account_id() -> int:
         return None
 
     # Coba beberapa kemungkinan field name
-    for field in ["aid", "accountID", "account_id", "id", "accountId"]:
+    for field in ["accountID", "account_id", "id", "accountId"]:
         if field in state:
             return int(state[field])
 
     # Kalau state adalah list (multiple accounts), ambil yang pertama
     if isinstance(state, list) and state:
         first = state[0]
-        for field in ["aid", "accountID", "account_id", "id", "accountId"]:
+        for field in ["accountID", "account_id", "id", "accountId"]:
             if field in first:
                 return int(first[field])
 
