@@ -36,79 +36,66 @@ log = logging.getLogger(__name__)
 
 # ══════════════════════════════════════════════════════════════
 # SYMBOL AUTO-DETECTION
-# Ambil nama pair yang benar langsung dari API, bukan hardcode.
+# Field API: "name" (bukan "symbol"), "id" (bukan "symbolID")
 # ══════════════════════════════════════════════════════════════
 
 def detect_trading_pairs(all_symbols: list) -> list:
     """
-    Cocokkan TARGET_ASSETS dengan symbol yang benar dari API.
-    Strategi matching (urut prioritas):
-      1. Cari exact match: BTC → BTC_USDC, USDC_BTC, vBTC_vUSDC, dll
-      2. Cari partial match: nama mengandung asset DAN quote
-      3. Fallback: pakai semua pair yang quote-nya USDC
-    Return: list nama symbol yang valid dari API.
+    Cocokkan TARGET_ASSETS dengan symbol dari API.
+    API SoDEX pakai field "name" dan "baseCoin"/"quoteCoin".
     """
     if not all_symbols:
         return []
 
-    available = {s["symbol"]: s for s in all_symbols if s.get("symbol")}
+    # Index by "name" (field yang benar dari API SoDEX)
+    available = {s["name"]: s for s in all_symbols if s.get("name")}
     matched   = []
     used      = set()
 
-    quote_upper = QUOTE_ASSET.upper()
-
     for asset in TARGET_ASSETS:
-        asset_upper = asset.upper()
-        found       = None
+        found = None
 
-        # Pass 1: exact patterns yang umum dipakai
-        candidates = [
-            f"{asset_upper}_{quote_upper}",          # BTC_USDC
-            f"v{asset_upper}_v{quote_upper}",         # vBTC_vUSDC
-            f"{asset_upper}_{quote_upper.lower()}",   # BTC_usdc
-            f"{asset_upper}USDC",                     # BTCUSDC
-            f"{quote_upper}_{asset_upper}",           # USDC_BTC (reversed)
-        ]
-        for c in candidates:
-            if c in available and c not in used:
-                found = c
+        # Cari pair yang baseCoin == asset dan quoteCoin == QUOTE_ASSET
+        for sym_name, sym_data in available.items():
+            if (sym_data.get("baseCoin", "").upper() == asset.upper()
+                    and sym_data.get("quoteCoin", "").upper() == QUOTE_ASSET.upper()
+                    and sym_name not in used):
+                found = sym_name
                 break
 
-        # Pass 2: partial match — cari symbol yang mengandung keduanya
+        # Fallback: partial match di nama
         if not found:
-            for sym in available:
-                sym_up = sym.upper()
-                if (asset_upper in sym_up and quote_upper in sym_up
-                        and sym not in used):
-                    found = sym
+            for sym_name in available:
+                if (asset.upper() in sym_name.upper()
+                        and QUOTE_ASSET.upper() in sym_name.upper()
+                        and sym_name not in used):
+                    found = sym_name
                     break
 
         if found:
             matched.append(found)
             used.add(found)
 
-    # Fallback: kalau kurang dari MIN_PAIRS_REQUIRED, ambil semua USDC pairs
+    # Fallback: kalau kurang, ambil semua pair dengan quoteCoin == QUOTE_ASSET
     if len(matched) < MIN_PAIRS_REQUIRED:
-        log.warning(f"  Auto-detect hanya dapat {len(matched)} pairs, "
-                    f"fallback ke semua {quote_upper} pairs...")
-        for sym in available:
-            if quote_upper in sym.upper() and sym not in used:
-                matched.append(sym)
-                used.add(sym)
-                if len(matched) >= 20:   # cap 20 pairs
+        log.warning(f"  Auto-detect dapat {len(matched)} pairs, "
+                    f"fallback ke semua {QUOTE_ASSET} pairs...")
+        for sym_name, sym_data in available.items():
+            if (sym_data.get("quoteCoin", "").upper() == QUOTE_ASSET.upper()
+                    and sym_name not in used
+                    and sym_data.get("status") == "TRADING"):
+                matched.append(sym_name)
+                used.add(sym_name)
+                if len(matched) >= 20:
                     break
 
     return matched
 
 
-def log_symbol_mapping(target_assets: list, detected_pairs: list):
-    """Log hasil mapping asset → symbol yang terdeteksi."""
+def log_symbol_mapping(detected_pairs: list):
     log.info(f"  Auto-detected {len(detected_pairs)} trading pairs:")
     for sym in detected_pairs:
         log.info(f"    ✓ {sym}")
-    if len(detected_pairs) < len(target_assets):
-        missing = len(target_assets) - len(detected_pairs)
-        log.warning(f"  ⚠️  {missing} asset tidak ditemukan pasangannya di API")
 
 
 # ══════════════════════════════════════════════════════════════
@@ -122,10 +109,16 @@ def make_order_id(prefix: str) -> str:
 
 
 def get_symbol_info(symbol: str, all_symbols: list) -> dict:
+    """Cari info symbol — gunakan field 'name' sesuai API SoDEX."""
     for s in all_symbols:
-        if s.get("symbol") == symbol:
+        if s.get("name") == symbol:
             return s
     return None
+
+
+def get_symbol_id(sym_info: dict) -> int:
+    """Ambil ID symbol — gunakan field 'id' sesuai API SoDEX."""
+    return sym_info.get("id", 0)
 
 
 def get_last_price(symbol: str) -> float:
@@ -225,7 +218,7 @@ def trade_limit(symbol: str, all_symbols: list, cycle: int) -> bool:
 
     results = place_batch_orders({
         "accountID": 0,
-        "symbolID":  sym_info.get("symbolID", 0),
+        "symbolID":  get_symbol_id(sym_info),
         "orders": [
             {"clOrdID": buy_id,  "modifier": 1, "side": 1, "type": 1,
              "timeInForce": TIME_IN_FORCE, "price": buy_price,  "quantity": qty},
@@ -251,7 +244,7 @@ def trade_limit(symbol: str, all_symbols: list, cycle: int) -> bool:
 
     cancel_results = cancel_batch_orders({
         "accountID": 0,
-        "symbolID":  sym_info.get("symbolID", 0),
+        "symbolID":  get_symbol_id(sym_info),
         "orders":    [{"clOrdID": oid} for oid in placed],
     })
     for r in cancel_results:
@@ -282,7 +275,7 @@ def trade_market(symbol: str, all_symbols: list, cycle: int) -> bool:
                 last_price = float(asks[0][0])
 
     if last_price <= 0:
-        log.warning(f"    Tidak bisa ambil harga {symbol}")
+        log.warning(f"    Tidak bisa ambil harga: {symbol}")
         return False
 
     qty = calc_market_quantity(sym_info, last_price)
@@ -291,13 +284,15 @@ def trade_market(symbol: str, all_symbols: list, cycle: int) -> bool:
         return False
 
     price_prec = int(sym_info.get("pricePrecision", 2))
+    sym_id     = get_symbol_id(sym_info)
 
     buy_price_limit = None
     if MARKET_SLIPPAGE_RATIO:
-        bp = last_price * (1 + MARKET_SLIPPAGE_RATIO)
-        buy_price_limit = round_to_precision(bp, price_prec)
+        buy_price_limit = round_to_precision(
+            last_price * (1 + MARKET_SLIPPAGE_RATIO), price_prec
+        )
 
-    log.info(f"    💸 [MARKET] BUY {qty} {symbol} ~{MARKET_ORDER_USDC} USDC")
+    log.info(f"    💸 [MARKET] BUY {qty} {symbol}  ~{MARKET_ORDER_USDC} USDC")
 
     buy_order = {"clOrdID": make_order_id("MB"), "modifier": 1,
                  "side": 1, "type": 2, "timeInForce": 2, "quantity": qty}
@@ -305,8 +300,7 @@ def trade_market(symbol: str, all_symbols: list, cycle: int) -> bool:
         buy_order["price"] = buy_price_limit
 
     buy_results = place_batch_orders({
-        "accountID": 0, "symbolID": sym_info.get("symbolID", 0),
-        "orders": [buy_order],
+        "accountID": 0, "symbolID": sym_id, "orders": [buy_order],
     })
 
     buy_ok = False
@@ -329,12 +323,12 @@ def trade_market(symbol: str, all_symbols: list, cycle: int) -> bool:
     sell_order = {"clOrdID": make_order_id("MS"), "modifier": 1,
                   "side": 2, "type": 2, "timeInForce": 2, "quantity": qty}
     if MARKET_SLIPPAGE_RATIO:
-        sp = last_price * (1 - MARKET_SLIPPAGE_RATIO)
-        sell_order["price"] = round_to_precision(sp, price_prec)
+        sell_order["price"] = round_to_precision(
+            last_price * (1 - MARKET_SLIPPAGE_RATIO), price_prec
+        )
 
     sell_results = place_batch_orders({
-        "accountID": 0, "symbolID": sym_info.get("symbolID", 0),
-        "orders": [sell_order],
+        "accountID": 0, "symbolID": sym_id, "orders": [sell_order],
     })
     for r in sell_results:
         if r.get("code") == 0:
@@ -358,10 +352,10 @@ def trade_pair(symbol: str, all_symbols: list, cycle: int) -> bool:
         return trade_limit(symbol, all_symbols, cycle)
     elif BOT_MODE == "hybrid":
         if cycle % HYBRID_MARKET_EVERY == 0:
-            log.info(f"    🔀 [HYBRID] Siklus market order")
+            log.info("    🔀 [HYBRID] Siklus market order")
             return trade_market(symbol, all_symbols, cycle)
         else:
-            log.info(f"    🔀 [HYBRID] Siklus limit order")
+            log.info("    🔀 [HYBRID] Siklus limit order")
             return trade_limit(symbol, all_symbols, cycle)
     else:
         log.error(f"BOT_MODE tidak dikenal: '{BOT_MODE}'")
@@ -381,8 +375,11 @@ def print_status():
             coin  = b.get("coin",  "?")
             free  = b.get("free",  "0")
             total = b.get("total", "0")
-            if float(total) > 0:
-                log.info(f"   {coin:<12} free={free:<20} total={total}")
+            try:
+                if float(total) > 0:
+                    log.info(f"   {coin:<12} free={free:<20} total={total}")
+            except ValueError:
+                pass
     else:
         log.info("   (tidak bisa ambil balance)")
     log.info("─" * 55)
@@ -419,15 +416,14 @@ def main():
 
     log.info(f"    Symbol list dari API : {len(all_symbols)} symbols")
 
-    # ── AUTO-DETECT TRADING PAIRS ─────────────────────────────
+    # Auto-detect trading pairs
     trading_pairs = detect_trading_pairs(all_symbols)
     if not trading_pairs:
-        log.error("❌  Tidak ada pair yang cocok ditemukan. Cek TARGET_ASSETS di config.py.")
+        log.error("❌  Tidak ada pair yang cocok. Cek TARGET_ASSETS di config.py.")
         return
 
-    log_symbol_mapping(TARGET_ASSETS, trading_pairs)
+    log_symbol_mapping(trading_pairs)
     log.info(f"    Pairs aktif: {len(trading_pairs)}")
-    # ──────────────────────────────────────────────────────────
 
     print_status()
 
@@ -440,7 +436,7 @@ def main():
         log.info(f"\n{'='*55}")
         log.info(f"🔄  SIKLUS #{cycle}   —   {now}")
 
-        # Refresh symbol list dan re-detect pairs berkala
+        # Refresh berkala
         if cycle % SYMBOL_REFRESH_EVERY == 1 and cycle > 1:
             fresh = get_symbols()
             if fresh:
@@ -449,7 +445,6 @@ def main():
                 log.info(f"    Refreshed: {len(all_symbols)} symbols, "
                          f"{len(trading_pairs)} pairs aktif")
 
-        # Round-robin
         symbol = trading_pairs[pair_index % len(trading_pairs)]
         pair_index += 1
 
