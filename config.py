@@ -10,6 +10,11 @@ load_dotenv()
 PRIVATE_KEY    = os.getenv("PRIVATE_KEY")
 WALLET_ADDRESS = os.getenv("WALLET_ADDRESS", "").strip()
 
+# ── API Key ───────────────────────────────────────────────────
+# Nama API key yang terdaftar di SoDEX (cek di /accounts/{address}/api-keys)
+# Gunakan 'default' untuk sign dengan private key wallet utama
+API_KEY_NAME = "default"
+
 # ── Network ───────────────────────────────────────────────────
 TESTNET_CHAIN_ID = 138565
 BASE_URL         = "https://testnet-gw.sodex.dev/api/v1/spot"
