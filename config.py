@@ -14,23 +14,18 @@ WALLET_ADDRESS = os.getenv("WALLET_ADDRESS", "").lower()
 TESTNET_CHAIN_ID = 138565
 BASE_URL         = "https://testnet-gw.sodex.dev/api/v1/spot"
 
-# ── Target Asset (bukan nama pair langsung) ───────────────────
-# Bot akan auto-detect nama symbol yang benar dari API.
-# Tulis nama asset yang ingin di-trade — bot cari sendiri
-# pasangannya dengan USDC di list symbol yang tersedia.
-# Contoh: "BTC" akan cocok ke "BTC_USDC", "vBTC_vUSDC", dll.
+# ── Target Asset ──────────────────────────────────────────────
+# Nama base coin sesuai API SoDEX (field "baseCoin")
 TARGET_ASSETS = [
-    "BTC", "ETH", "SOL", "BNB", "ARB",
-    "OP",  "DOGE","AVAX","MATIC","LINK",
-    "UNI", "SUI",
+    "vBTC", "vETH", "vSOL", "vBNB", "vAVAX",
+    "vDOGE", "vLINK", "vUNI", "vADA", "vXRP",
+    "vLTC", "vAAVE",
 ]
 
-# Quote asset yang dipakai (untuk auto-match)
-# Bot akan cari pair yang mengandung QUOTE_ASSET sebagai quote
-QUOTE_ASSET = "USDC"
+# Quote coin sesuai API SoDEX (field "quoteCoin")
+QUOTE_ASSET = "vUSDC"
 
-# Fallback: kalau auto-detect tidak menemukan cukup pair,
-# bot akan pakai semua pair yang tersedia dari API
+# Kalau auto-detect kurang dari ini, fallback ke semua vUSDC pairs
 MIN_PAIRS_REQUIRED = 5
 
 # ── Mode Bot ──────────────────────────────────────────────────
