@@ -15,7 +15,8 @@ from config import (
     SYMBOL_REFRESH_EVERY, STATUS_PRINT_EVERY,
     PRICE_OFFSET_TICKS, TIME_IN_FORCE,
     BOT_MODE, HYBRID_MARKET_EVERY,
-    MARKET_ORDER_USDC, MARKET_SLIPPAGE_RATIO,
+    ORDER_SIZE_PCT, ORDER_MAX_USDC,
+    MARKET_SLIPPAGE_RATIO,
     BASE_URL,
 )
 from api import (
@@ -34,22 +35,21 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-ACCOUNT_ID = None
+ACCOUNT_ID    = None
+USDC_BALANCE  = 0.0   # Di-update setiap STATUS_PRINT_EVERY siklus
 
 
 # ══════════════════════════════════════════════════════════════
-# ACCOUNT ID
+# ACCOUNT
 # ══════════════════════════════════════════════════════════════
 
 def fetch_account_id() -> int:
     import requests
     log.info("    Fetching accountID dari API...")
     acc_id = get_account_id()
-    if acc_id is not None:
+    if acc_id is not None and acc_id > 0:
         log.info(f"    accountID: {acc_id}")
         return acc_id
-
-    # Log raw response untuk debugging
     try:
         r = requests.get(
             f"{BASE_URL}/accounts/{WALLET_ADDRESS}/state",
@@ -59,6 +59,29 @@ def fetch_account_id() -> int:
     except Exception as e:
         log.error(f"    Fetch account state gagal: {e}")
     return None
+
+
+def fetch_usdc_balance() -> float:
+    """Ambil saldo vUSDC saat ini."""
+    global USDC_BALANCE
+    bal = get_balances()
+    if not bal:
+        return USDC_BALANCE
+
+    # Format balance dari field "B" di state API
+    balances = bal.get("balances") or bal.get("B") or []
+    for b in balances:
+        # Field bisa "coin"/"a" dan "total"/"t"
+        coin  = b.get("coin") or b.get("a", "")
+        total = b.get("total") or b.get("t", "0")
+        if coin.upper() == QUOTE_ASSET.upper():
+            try:
+                USDC_BALANCE = float(total)
+            except ValueError:
+                pass
+            break
+
+    return USDC_BALANCE
 
 
 # ══════════════════════════════════════════════════════════════
@@ -143,81 +166,67 @@ def get_last_price(symbol: str) -> float:
     return 0.0
 
 
-def format_price(raw_price: str) -> str:
+def calc_limit_price(orderbook: dict, side: str) -> str:
     """
-    Format harga sesuai yang diterima API SoDEX.
-    Orderbook mengembalikan integer string ("81444") — kirim balik sebagai integer string.
-    Kalau harga dari kalkulasi float, bulatkan ke integer.
-    """
-    try:
-        f = float(raw_price)
-        # Kalau angka >= 1 dan tidak punya desimal signifikan = integer
-        if f >= 1 and f == int(f):
-            return str(int(f))
-        # Kalau punya desimal, return as-is tapi strip trailing zeros
-        return str(f).rstrip("0").rstrip(".")
-    except Exception:
-        return str(raw_price)
-
-
-def calc_limit_price(orderbook: dict, side: str, symbol_info: dict) -> str:
-    """
-    Hitung harga limit order di luar spread.
-    Harga dari API adalah integer string — offset pakai 1 tick = 1 unit integer.
+    Harga dari orderbook adalah integer string ("81444").
+    Offset pakai unit integer langsung.
     """
     try:
         if side == "BUY":
             bids = orderbook.get("bids", [])
             if not bids:
                 return None
-            best = int(float(bids[0][0]))
-            # Pasang di bawah best bid sebanyak PRICE_OFFSET_TICKS
-            price = best - PRICE_OFFSET_TICKS
+            price = int(float(bids[0][0])) - PRICE_OFFSET_TICKS
         else:
             asks = orderbook.get("asks", [])
             if not asks:
                 return None
-            best = int(float(asks[0][0]))
-            # Pasang di atas best ask sebanyak PRICE_OFFSET_TICKS
-            price = best + PRICE_OFFSET_TICKS
-
-        if price <= 0:
-            return None
-        return str(price)
-
+            price = int(float(asks[0][0])) + PRICE_OFFSET_TICKS
+        return str(max(price, 1))
     except Exception as e:
         log.error(f"calc_limit_price: {e}")
         return None
 
 
-def calc_min_quantity(symbol_info: dict) -> str:
+def calc_quantity(symbol_info: dict, last_price: float) -> str:
+    """
+    Hitung quantity berdasarkan ORDER_SIZE_PCT dari saldo vUSDC.
+    Contoh: saldo 950 USDC × 2% = 19 USDC → qty = 19 / harga_BTC
+
+    Tetap menghormati minQuantity dan stepSize dari API.
+    Format output: desimal biasa (bukan scientific notation).
+    """
     try:
-        min_qty   = float(symbol_info.get("minQuantity",  "0"))
         step_size = float(symbol_info.get("stepSize",     "0.001"))
+        min_qty   = float(symbol_info.get("minQuantity",  "0"))
         qty_prec  = int(symbol_info.get("quantityPrecision", 3))
-        qty       = max(min_qty, step_size)
-        qty       = round(qty, qty_prec)
-        return f"{qty:.{qty_prec}f}"
-    except Exception as e:
-        log.error(f"calc_min_quantity: {e}")
-        return None
 
-
-def calc_market_quantity(symbol_info: dict, last_price: float) -> str:
-    try:
-        usdc_amount = float(MARKET_ORDER_USDC)
-        step_size   = float(symbol_info.get("stepSize", "0.001"))
-        qty_prec    = int(symbol_info.get("quantityPrecision", 3))
-        min_qty     = float(symbol_info.get("minQuantity", "0"))
         if last_price <= 0:
-            return None
-        qty = (usdc_amount / last_price // step_size) * step_size
-        qty = round(qty, qty_prec)
-        if min_qty > 0 and qty < min_qty:
-            qty = min_qty
-        return str(qty)
+            # Kalau tidak ada harga, pakai minQuantity saja
+            qty = max(min_qty, step_size)
+        else:
+            # Hitung dari persentase saldo
+            usdc_to_use = USDC_BALANCE * ORDER_SIZE_PCT
+
+            # Terapkan cap maksimum
+            if ORDER_MAX_USDC > 0:
+                usdc_to_use = min(usdc_to_use, ORDER_MAX_USDC)
+
+            qty = usdc_to_use / last_price
+
+            # Bulatkan ke stepSize terdekat (ke bawah)
+            qty = (qty // step_size) * step_size
+            qty = round(qty, qty_prec)
+
+            # Pastikan di atas minimum
+            if min_qty > 0 and qty < min_qty:
+                qty = min_qty
+
+        # Format sebagai desimal biasa — hindari scientific notation
+        return f"{qty:.{qty_prec}f}"
+
     except Exception as e:
-        log.error(f"calc_market_quantity: {e}")
+        log.error(f"calc_quantity: {e}")
         return None
 
 
@@ -236,15 +245,25 @@ def trade_limit(symbol: str, all_symbols: list, cycle: int) -> bool:
         log.warning(f"    Orderbook kosong: {symbol}")
         return False
 
-    buy_price  = calc_limit_price(ob, "BUY",  sym_info)
-    sell_price = calc_limit_price(ob, "SELL", sym_info)
-    qty        = calc_min_quantity(sym_info)
+    # Ambil last price untuk kalkulasi qty
+    last_price = 0.0
+    asks = ob.get("asks", [])
+    bids = ob.get("bids", [])
+    if asks:
+        last_price = float(asks[0][0])
+    elif bids:
+        last_price = float(bids[0][0])
+
+    buy_price  = calc_limit_price(ob, "BUY")
+    sell_price = calc_limit_price(ob, "SELL")
+    qty        = calc_quantity(sym_info, last_price)
 
     if not all([buy_price, sell_price, qty]):
         log.warning(f"    Tidak bisa hitung harga/qty: {symbol}")
         return False
 
-    log.info(f"    📋 buy={buy_price} sell={sell_price} qty={qty}")
+    log.info(f"    📋 buy={buy_price} sell={sell_price} qty={qty} "
+             f"(saldo={USDC_BALANCE:.2f} USDC × {ORDER_SIZE_PCT*100:.0f}%)")
 
     buy_id  = make_order_id("LB")
     sell_id = make_order_id("LS")
@@ -311,18 +330,19 @@ def trade_market(symbol: str, all_symbols: list, cycle: int) -> bool:
         log.warning(f"    Tidak bisa ambil harga: {symbol}")
         return False
 
-    qty = calc_market_quantity(sym_info, last_price)
+    qty = calc_quantity(sym_info, last_price)
     if not qty or float(qty) <= 0:
         log.warning(f"    Qty tidak valid: {symbol} (price={last_price})")
         return False
 
     sym_id = get_symbol_id(sym_info)
 
-    # Harga slippage untuk market order (tetap integer)
+    # Slippage dalam integer
     buy_price_limit = str(int(last_price * (1 + MARKET_SLIPPAGE_RATIO))) if MARKET_SLIPPAGE_RATIO else None
     sel_price_limit = str(int(last_price * (1 - MARKET_SLIPPAGE_RATIO))) if MARKET_SLIPPAGE_RATIO else None
 
-    log.info(f"    💸 [MARKET] BUY {qty} {symbol}  ~{MARKET_ORDER_USDC} USDC")
+    usdc_val = float(qty) * last_price
+    log.info(f"    💸 [MARKET] BUY {qty} {symbol}  ~{usdc_val:.2f} USDC")
 
     buy_order = {"clOrdID": make_order_id("MB"), "modifier": 1,
                  "side": 1, "type": 2, "timeInForce": 2, "quantity": qty}
@@ -395,21 +415,29 @@ def trade_pair(symbol: str, all_symbols: list, cycle: int) -> bool:
 # ══════════════════════════════════════════════════════════════
 
 def print_status():
+    global USDC_BALANCE
     log.info("─" * 55)
     log.info("📊 STATUS AKUN")
     bal = get_balances()
     if bal:
-        for b in (bal.get("balances") or []):
-            coin  = b.get("coin",  "?")
-            free  = b.get("free",  "0")
-            total = b.get("total", "0")
+        balances = bal.get("balances") or bal.get("B") or []
+        for b in balances:
+            coin  = b.get("coin") or b.get("a", "?")
+            free  = b.get("free") or b.get("f", "0")
+            total = b.get("total") or b.get("t", "0")
             try:
-                if float(total) > 0:
+                total_f = float(total)
+                if total_f > 0:
                     log.info(f"   {coin:<12} free={free:<20} total={total}")
+                    if coin.upper() == QUOTE_ASSET.upper():
+                        USDC_BALANCE = total_f
             except ValueError:
                 pass
     else:
         log.info("   (tidak bisa ambil balance)")
+    log.info(f"   Saldo aktif: {USDC_BALANCE:.4f} {QUOTE_ASSET}")
+    log.info(f"   Per order  : {USDC_BALANCE * ORDER_SIZE_PCT:.4f} {QUOTE_ASSET} "
+             f"({ORDER_SIZE_PCT*100:.0f}%)")
     log.info("─" * 55)
 
 
@@ -418,15 +446,14 @@ def print_status():
 # ══════════════════════════════════════════════════════════════
 
 def main():
-    global ACCOUNT_ID
+    global ACCOUNT_ID, USDC_BALANCE
 
     log.info("=" * 55)
     log.info("🤖  SoDEX Testnet Bot  —  START")
-    log.info(f"    Wallet   : {WALLET_ADDRESS}")
-    log.info(f"    Mode     : {BOT_MODE.upper()}")
-    log.info(f"    Endpoint : {BASE_URL}")
-    if BOT_MODE in ("market", "hybrid"):
-        log.info(f"    USDC/siklus market: {MARKET_ORDER_USDC}")
+    log.info(f"    Wallet     : {WALLET_ADDRESS}")
+    log.info(f"    Mode       : {BOT_MODE.upper()}")
+    log.info(f"    Order size : {ORDER_SIZE_PCT*100:.0f}% saldo (max {ORDER_MAX_USDC} USDC)")
+    log.info(f"    Endpoint   : {BASE_URL}")
     if BOT_MODE == "hybrid":
         log.info(f"    Market setiap: {HYBRID_MARKET_EVERY} siklus")
     log.info("=" * 55)
@@ -449,8 +476,7 @@ def main():
     if not all_symbols:
         log.error("❌  Tidak bisa ambil symbol list.")
         return
-
-    log.info(f"    Symbol list dari API : {len(all_symbols)} symbols")
+    log.info(f"    Symbol list: {len(all_symbols)} symbols")
 
     # Auto-detect trading pairs
     trading_pairs = detect_trading_pairs(all_symbols)
@@ -461,6 +487,8 @@ def main():
     log_symbol_mapping(trading_pairs)
     log.info(f"    Pairs aktif: {len(trading_pairs)}")
 
+    # Ambil saldo awal
+    fetch_usdc_balance()
     print_status()
 
     cycle      = 0
@@ -472,7 +500,7 @@ def main():
         log.info(f"\n{'='*55}")
         log.info(f"🔄  SIKLUS #{cycle}   —   {now}")
 
-        # Refresh berkala
+        # Refresh symbol list berkala
         if cycle % SYMBOL_REFRESH_EVERY == 1 and cycle > 1:
             fresh = get_symbols()
             if fresh:
@@ -487,7 +515,9 @@ def main():
         ok = trade_pair(symbol, all_symbols, cycle)
         log.info(f"  {'✅' if ok else '⏭️ '}  {symbol}  {'selesai' if ok else 'diskip'}")
 
+        # Refresh saldo dan print status berkala
         if cycle % STATUS_PRINT_EVERY == 0:
+            fetch_usdc_balance()
             print_status()
 
         delay = random.uniform(CYCLE_DELAY_MIN, CYCLE_DELAY_MAX)
