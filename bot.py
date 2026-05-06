@@ -20,7 +20,8 @@ from config import (
 )
 from api import (
     get_symbols, get_orderbook, get_tickers,
-    get_balances, place_batch_orders, cancel_batch_orders,
+    get_balances, get_account_id, get_account_state,
+    place_batch_orders, cancel_batch_orders,
 )
 
 logging.basicConfig(
@@ -33,21 +34,68 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
+# accountID global — di-fetch saat startup
+ACCOUNT_ID = None
+
+
+# ══════════════════════════════════════════════════════════════
+# ACCOUNT ID FETCH
+# ══════════════════════════════════════════════════════════════
+
+def fetch_account_id() -> int:
+    """
+    Fetch accountID yang benar dari API SoDEX.
+    Log struktur response lengkap untuk debugging kalau gagal.
+    """
+    log.info("    Fetching accountID dari API...")
+
+    # Coba via get_account_id() di api.py dulu
+    acc_id = get_account_id()
+    if acc_id is not None:
+        log.info(f"    accountID: {acc_id}")
+        return acc_id
+
+    # Kalau gagal, log raw response untuk debugging
+    import requests
+    PUBLIC_HEADERS = {"Accept": "application/json"}
+    try:
+        r = requests.get(
+            f"{BASE_URL}/accounts/{WALLET_ADDRESS}/state",
+            headers=PUBLIC_HEADERS, timeout=10
+        )
+        import json
+        log.warning(f"    Raw account state response: {r.text[:500]}")
+    except Exception as e:
+        log.error(f"    Tidak bisa fetch account state: {e}")
+
+    # Fallback: coba endpoint lain
+    try:
+        r = requests.get(
+            f"{BASE_URL}/accounts/{WALLET_ADDRESS}",
+            headers=PUBLIC_HEADERS, timeout=10
+        )
+        log.warning(f"    Raw account response: {r.text[:500]}")
+        d = r.json()
+        data = d.get("data", {})
+        if isinstance(data, dict):
+            for field in ["accountID", "account_id", "id", "accountId"]:
+                if field in data:
+                    return int(data[field])
+    except Exception as e:
+        log.error(f"    Fallback account fetch gagal: {e}")
+
+    log.error("    ❌ Tidak bisa dapat accountID — cek log di atas")
+    return None
+
 
 # ══════════════════════════════════════════════════════════════
 # SYMBOL AUTO-DETECTION
-# Field API: "name" (bukan "symbol"), "id" (bukan "symbolID")
 # ══════════════════════════════════════════════════════════════
 
 def detect_trading_pairs(all_symbols: list) -> list:
-    """
-    Cocokkan TARGET_ASSETS dengan symbol dari API.
-    API SoDEX pakai field "name" dan "baseCoin"/"quoteCoin".
-    """
     if not all_symbols:
         return []
 
-    # Index by "name" (field yang benar dari API SoDEX)
     available = {s["name"]: s for s in all_symbols if s.get("name")}
     matched   = []
     used      = set()
@@ -55,7 +103,7 @@ def detect_trading_pairs(all_symbols: list) -> list:
     for asset in TARGET_ASSETS:
         found = None
 
-        # Cari pair yang baseCoin == asset dan quoteCoin == QUOTE_ASSET
+        # Match via baseCoin + quoteCoin
         for sym_name, sym_data in available.items():
             if (sym_data.get("baseCoin", "").upper() == asset.upper()
                     and sym_data.get("quoteCoin", "").upper() == QUOTE_ASSET.upper()
@@ -76,10 +124,9 @@ def detect_trading_pairs(all_symbols: list) -> list:
             matched.append(found)
             used.add(found)
 
-    # Fallback: kalau kurang, ambil semua pair dengan quoteCoin == QUOTE_ASSET
+    # Fallback: semua pair TRADING dengan quoteCoin == QUOTE_ASSET
     if len(matched) < MIN_PAIRS_REQUIRED:
-        log.warning(f"  Auto-detect dapat {len(matched)} pairs, "
-                    f"fallback ke semua {QUOTE_ASSET} pairs...")
+        log.warning(f"  Auto-detect dapat {len(matched)} pairs, fallback...")
         for sym_name, sym_data in available.items():
             if (sym_data.get("quoteCoin", "").upper() == QUOTE_ASSET.upper()
                     and sym_name not in used
@@ -109,7 +156,6 @@ def make_order_id(prefix: str) -> str:
 
 
 def get_symbol_info(symbol: str, all_symbols: list) -> dict:
-    """Cari info symbol — gunakan field 'name' sesuai API SoDEX."""
     for s in all_symbols:
         if s.get("name") == symbol:
             return s
@@ -117,7 +163,6 @@ def get_symbol_info(symbol: str, all_symbols: list) -> dict:
 
 
 def get_symbol_id(sym_info: dict) -> int:
-    """Ambil ID symbol — gunakan field 'id' sesuai API SoDEX."""
     return sym_info.get("id", 0)
 
 
@@ -217,7 +262,7 @@ def trade_limit(symbol: str, all_symbols: list, cycle: int) -> bool:
     sell_id = make_order_id("LS")
 
     results = place_batch_orders({
-        "accountID": 0,
+        "accountID": ACCOUNT_ID,
         "symbolID":  get_symbol_id(sym_info),
         "orders": [
             {"clOrdID": buy_id,  "modifier": 1, "side": 1, "type": 1,
@@ -243,7 +288,7 @@ def trade_limit(symbol: str, all_symbols: list, cycle: int) -> bool:
     time.sleep(hold)
 
     cancel_results = cancel_batch_orders({
-        "accountID": 0,
+        "accountID": ACCOUNT_ID,
         "symbolID":  get_symbol_id(sym_info),
         "orders":    [{"clOrdID": oid} for oid in placed],
     })
@@ -300,7 +345,7 @@ def trade_market(symbol: str, all_symbols: list, cycle: int) -> bool:
         buy_order["price"] = buy_price_limit
 
     buy_results = place_batch_orders({
-        "accountID": 0, "symbolID": sym_id, "orders": [buy_order],
+        "accountID": ACCOUNT_ID, "symbolID": sym_id, "orders": [buy_order],
     })
 
     buy_ok = False
@@ -328,7 +373,7 @@ def trade_market(symbol: str, all_symbols: list, cycle: int) -> bool:
         )
 
     sell_results = place_batch_orders({
-        "accountID": 0, "symbolID": sym_id, "orders": [sell_order],
+        "accountID": ACCOUNT_ID, "symbolID": sym_id, "orders": [sell_order],
     })
     for r in sell_results:
         if r.get("code") == 0:
@@ -390,6 +435,8 @@ def print_status():
 # ══════════════════════════════════════════════════════════════
 
 def main():
+    global ACCOUNT_ID
+
     log.info("=" * 55)
     log.info("🤖  SoDEX Testnet Bot  —  START")
     log.info(f"    Wallet   : {WALLET_ADDRESS}")
@@ -408,10 +455,18 @@ def main():
         log.error("❌  WALLET_ADDRESS tidak ada di .env — berhenti.")
         return
 
+    # ── Fetch accountID ───────────────────────────────────────
+    ACCOUNT_ID = fetch_account_id()
+    if ACCOUNT_ID is None:
+        log.error("❌  Tidak bisa dapat accountID — berhenti.")
+        log.error("    Pastikan wallet sudah terdaftar di SoDEX testnet (login via browser dulu).")
+        return
+    # ──────────────────────────────────────────────────────────
+
     # Ambil symbol list dari API
     all_symbols = get_symbols()
     if not all_symbols:
-        log.error("❌  Tidak bisa ambil symbol list. Cek koneksi VPS.")
+        log.error("❌  Tidak bisa ambil symbol list.")
         return
 
     log.info(f"    Symbol list dari API : {len(all_symbols)} symbols")
