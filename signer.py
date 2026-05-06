@@ -5,6 +5,7 @@ import time
 import json
 from web3 import Web3
 from eth_account import Account
+from eth_account.messages import encode_defunct
 from config import PRIVATE_KEY, WALLET_ADDRESS, TESTNET_CHAIN_ID
 
 
@@ -25,9 +26,9 @@ def sign_action(payload: dict) -> tuple:
     Return: (typed_signature, nonce)
     Typed signature format SoDEX = 0x01 + sig_bytes
     """
-    nonce               = int(time.time() * 1000)
-    payload_hash        = compute_payload_hash(payload)
-    payload_hash_bytes  = bytes.fromhex(payload_hash[2:])
+    nonce              = int(time.time() * 1000)
+    payload_hash       = compute_payload_hash(payload)
+    payload_hash_bytes = bytes.fromhex(payload_hash[2:])
 
     # Domain separator
     domain_type_hash = Web3.keccak(
@@ -56,11 +57,21 @@ def sign_action(payload: dict) -> tuple:
     # Final EIP-191 hash: \x19\x01 + domainSeparator + messageHash
     final_hash = Web3.keccak(b"\x19\x01" + encoded_domain + encoded_message)
 
-    # Sign dan tambahkan prefix 0x01 (SoDEX typed signature format)
-    account   = Account.from_key(PRIVATE_KEY)
-    sig       = account.signHash(final_hash)
-    typed_sig = "0x01" + sig.signature.hex()
+    # Sign — kompatibel dengan eth-account versi lama dan baru
+    account = Account.from_key(PRIVATE_KEY)
+    try:
+        # eth-account >= 0.9
+        sig = account.signHash(final_hash)
+    except AttributeError:
+        # eth-account >= 0.11 — signHash dihapus, pakai unsafe_sign_hash
+        try:
+            sig = account.unsafe_sign_hash(final_hash)
+        except AttributeError:
+            # Fallback: sign raw bytes lewat sign_message
+            from eth_account._utils.signing import sign_message_hash
+            sig = sign_message_hash(account.key, final_hash)
 
+    typed_sig = "0x01" + sig.signature.hex()
     return typed_sig, nonce
 
 
