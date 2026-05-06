@@ -65,6 +65,47 @@ def get_tickers(symbol: str = None) -> list:
 
 # ── Account ───────────────────────────────────────────────────
 
+def get_account_state() -> dict:
+    """Ambil state akun lengkap — termasuk accountID yang benar."""
+    try:
+        r = requests.get(
+            f"{BASE_URL}/accounts/{WALLET_ADDRESS}/state",
+            headers=PUBLIC_HEADERS,
+            timeout=10
+        )
+        d = r.json()
+        if d.get("code") == 0:
+            return d.get("data")
+    except Exception as e:
+        log.error(f"get_account_state: {e}")
+    return None
+
+
+def get_account_id() -> int:
+    """
+    Fetch accountID yang benar dari API.
+    API SoDEX tidak menerima accountID=0 — harus pakai ID asli dari akun.
+    """
+    state = get_account_state()
+    if not state:
+        return None
+
+    # Coba beberapa kemungkinan field name
+    for field in ["accountID", "account_id", "id", "accountId"]:
+        if field in state:
+            return int(state[field])
+
+    # Kalau state adalah list (multiple accounts), ambil yang pertama
+    if isinstance(state, list) and state:
+        first = state[0]
+        for field in ["accountID", "account_id", "id", "accountId"]:
+            if field in first:
+                return int(first[field])
+
+    log.warning(f"accountID tidak ditemukan di state. Keys: {list(state.keys()) if isinstance(state, dict) else type(state)}")
+    return None
+
+
 def get_balances() -> dict:
     """Ambil saldo spot akun."""
     try:
@@ -82,7 +123,7 @@ def get_balances() -> dict:
 
 
 def get_open_orders(symbol: str = None) -> list:
-    """Ambil semua open order, opsional filter per symbol."""
+    """Ambil semua open order."""
     try:
         params = {"symbol": symbol} if symbol else {}
         r = requests.get(
@@ -102,14 +143,7 @@ def get_open_orders(symbol: str = None) -> list:
 # ── Trading ───────────────────────────────────────────────────
 
 def place_batch_orders(orders_payload: dict) -> list:
-    """
-    Place batch orders (max 100 per request).
-    orders_payload: {
-        "accountID": 0,
-        "symbolID": X,
-        "orders": [{ clOrdID, modifier, side, type, timeInForce, price, quantity }]
-    }
-    """
+    """Place batch orders."""
     sign_payload = {"type": "newOrder", "params": orders_payload}
     headers = signed_headers(sign_payload)
     try:
@@ -129,14 +163,7 @@ def place_batch_orders(orders_payload: dict) -> list:
 
 
 def cancel_batch_orders(cancel_payload: dict) -> list:
-    """
-    Cancel batch orders.
-    cancel_payload: {
-        "accountID": 0,
-        "symbolID": X,
-        "orders": [{ "clOrdID": "..." }]
-    }
-    """
+    """Cancel batch orders."""
     sign_payload = {"type": "cancelOrder", "params": cancel_payload}
     headers = signed_headers(sign_payload)
     try:
