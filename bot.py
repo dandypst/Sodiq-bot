@@ -198,7 +198,6 @@ def calc_quantity(symbol_info: dict, last_price: float) -> str:
             if min_qty > 0 and qty < min_qty:
                 qty = min_qty
 
-        # Format tanpa scientific notation, strip trailing zero
         formatted = f"{qty:.{qty_prec}f}".rstrip("0").rstrip(".")
         if not formatted or float(formatted) <= 0:
             formatted = f"{qty:.{qty_prec}f}"
@@ -224,7 +223,6 @@ def trade_limit(symbol: str, all_symbols: list, cycle: int) -> bool:
         log.warning(f"    Orderbook kosong: {symbol}")
         return False
 
-    # Ambil last price dari orderbook untuk kalkulasi qty
     asks = ob.get("asks", [])
     bids = ob.get("bids", [])
     last_price = float(asks[0][0]) if asks else (float(bids[0][0]) if bids else 0)
@@ -244,19 +242,20 @@ def trade_limit(symbol: str, all_symbols: list, cycle: int) -> bool:
     buy_id  = make_order_id("LB")
     sell_id = make_order_id("LS")
 
-    # Sesuai docs: SymbolID ada di tiap order item
+    # Order items: clOrdID, modifier, side, type, timeInForce, price, quantity
+    # (sesuai Go struct order — tanpa symbolID di item)
     orders = [
-        {"symbolID": sym_id, "clOrdID": buy_id,  "modifier": 1, "side": 1,
-         "type": 1, "timeInForce": TIME_IN_FORCE, "price": buy_price,  "quantity": qty},
-        {"symbolID": sym_id, "clOrdID": sell_id, "modifier": 1, "side": 2,
-         "type": 1, "timeInForce": TIME_IN_FORCE, "price": sell_price, "quantity": qty},
+        {"clOrdID": buy_id,  "modifier": 1, "side": 1, "type": 1,
+         "timeInForce": TIME_IN_FORCE, "price": buy_price,  "quantity": qty},
+        {"clOrdID": sell_id, "modifier": 1, "side": 2, "type": 1,
+         "timeInForce": TIME_IN_FORCE, "price": sell_price, "quantity": qty},
     ]
 
-    results = place_batch_orders(ACCOUNT_ID, orders)
+    results = place_batch_orders(ACCOUNT_ID, sym_id, orders)
     placed  = []
     for r in results:
         if r.get("code") == 0:
-            placed.append({"symbolID": sym_id, "clOrdID": r["clOrdID"]})
+            placed.append(r["clOrdID"])
             log.info(f"    ✓ [LIMIT] {r['clOrdID']}  orderID={r.get('orderID')}")
         else:
             log.warning(f"    ✗ [LIMIT] {r.get('clOrdID')}: {r.get('error')}")
@@ -268,7 +267,7 @@ def trade_limit(symbol: str, all_symbols: list, cycle: int) -> bool:
     log.info(f"    ⏳ Hold {hold:.1f}s lalu cancel...")
     time.sleep(hold)
 
-    cancel_results = cancel_batch_orders(ACCOUNT_ID, placed)
+    cancel_results = cancel_batch_orders(ACCOUNT_ID, sym_id, placed)
     for r in cancel_results:
         if r.get("code") == 0:
             log.info(f"    ✓ Cancelled {r.get('origClOrdID')}")
@@ -313,12 +312,12 @@ def trade_market(symbol: str, all_symbols: list, cycle: int) -> bool:
     usdc_val = float(qty) * last_price
     log.info(f"    💸 [MARKET] BUY {qty} {symbol}  ~{usdc_val:.2f} USDC")
 
-    buy_order = {"symbolID": sym_id, "clOrdID": make_order_id("MB"),
-                 "modifier": 1, "side": 1, "type": 2, "timeInForce": 2, "quantity": qty}
+    buy_order = {"clOrdID": make_order_id("MB"), "modifier": 1,
+                 "side": 1, "type": 2, "timeInForce": 2, "quantity": qty}
     if buy_price_limit:
         buy_order["price"] = buy_price_limit
 
-    buy_results = place_batch_orders(ACCOUNT_ID, [buy_order])
+    buy_results = place_batch_orders(ACCOUNT_ID, sym_id, [buy_order])
     buy_ok = False
     for r in buy_results:
         if r.get("code") == 0:
@@ -335,12 +334,12 @@ def trade_market(symbol: str, all_symbols: list, cycle: int) -> bool:
     time.sleep(pause)
 
     log.info(f"    💸 [MARKET] SELL {qty} {symbol}")
-    sell_order = {"symbolID": sym_id, "clOrdID": make_order_id("MS"),
-                  "modifier": 1, "side": 2, "type": 2, "timeInForce": 2, "quantity": qty}
+    sell_order = {"clOrdID": make_order_id("MS"), "modifier": 1,
+                  "side": 2, "type": 2, "timeInForce": 2, "quantity": qty}
     if sel_price_limit:
         sell_order["price"] = sel_price_limit
 
-    sell_results = place_batch_orders(ACCOUNT_ID, [sell_order])
+    sell_results = place_batch_orders(ACCOUNT_ID, sym_id, [sell_order])
     for r in sell_results:
         if r.get("code") == 0:
             log.info(f"    ✓ SELL filled  orderID={r.get('orderID')}")
