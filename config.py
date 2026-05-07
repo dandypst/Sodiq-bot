@@ -40,7 +40,7 @@ HYBRID_MARKET_EVERY = 5
 # Contoh: 0.02 = 2% dari saldo vUSDC per siklus
 # Bot akan hitung qty otomatis dari saldo aktual
 # Minimum tetap mengikuti minQuantity dari API
-ORDER_SIZE_PCT = 0.005   # 0.5% per siklus
+ORDER_SIZE_PCT = 0.007   # 0.7% per siklus, min notional 5 USDC
 
 # Maksimum USDC per order (safety cap) — set 0 untuk tidak ada limit
 ORDER_MAX_USDC = 50.0   # max 50 USDC per order
