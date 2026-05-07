@@ -110,7 +110,7 @@ def get_open_orders(symbol: str = None) -> list:
 
 def place_order(account_id: int, symbol_id: int,
                 clord_id: str, side: int, order_type: int,
-                time_in_force: int = None, price: str = None,
+                time_in_force: int, price: str = None,
                 quantity: str = None) -> dict:
     """
     Place single spot order.
@@ -125,7 +125,7 @@ def place_order(account_id: int, symbol_id: int,
         "side":      side,
         "type":      order_type,
     }
-    if time_in_force is not None:
+    if time_in_force is not None:  # selalu ada
         params["timeInForce"] = time_in_force
     if price is not None:
         params["price"] = price
