@@ -336,7 +336,7 @@ def trade_market(symbol: str, all_symbols: list, cycle: int) -> bool:
 
     buy_result = place_order(
         ACCOUNT_ID, sym_id, make_order_id("MB"),
-        side=1, order_type=2, time_in_force=2,
+        side=1, order_type=2, time_in_force=3,
         price=buy_price_limit, quantity=qty
     )
 
@@ -353,7 +353,7 @@ def trade_market(symbol: str, all_symbols: list, cycle: int) -> bool:
     log.info(f"    💸 [MARKET] SELL {qty} {symbol}")
     sell_result = place_order(
         ACCOUNT_ID, sym_id, make_order_id("MS"),
-        side=2, order_type=2, time_in_force=2,
+        side=2, order_type=2, time_in_force=3,
         price=sel_price_limit, quantity=qty
     )
 
