@@ -9,7 +9,7 @@ import json
 import time
 from web3 import Web3
 from eth_account import Account
-from config import PRIVATE_KEY, TESTNET_CHAIN_ID, API_KEY_NAME
+from config import PRIVATE_KEY, MAINNET_CHAIN_ID, API_KEY_NAME
 
 
 def _build_domain_sep() -> bytes:
@@ -21,7 +21,7 @@ def _build_domain_sep() -> bytes:
         domain_type_hash +
         Web3.keccak(text="spot") +
         Web3.keccak(text="1") +
-        TESTNET_CHAIN_ID.to_bytes(32, "big") +
+        MAINNET_CHAIN_ID.to_bytes(32, "big") +
         bytes(32)   # verifyingContract = zero address, padded 32 bytes
     )
 
@@ -85,6 +85,6 @@ def make_headers(action_type: str, params: dict) -> tuple:
         "X-API-Key":    API_KEY_NAME,
         "X-API-Sign":   sig,
         "X-API-Nonce":  str(nonce),
-        "X-API-Chain":  str(TESTNET_CHAIN_ID),
+        "X-API-Chain":  str(MAINNET_CHAIN_ID),
     }
     return headers, nonce
