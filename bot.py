@@ -17,6 +17,8 @@ from config import (
     BOT_MODE, HYBRID_MARKET_EVERY,
     ORDER_SIZE_PCT, ORDER_MAX_USDC,
     MARKET_SLIPPAGE_RATIO,
+    BREAK_EVERY_CYCLES_MIN, BREAK_EVERY_CYCLES_MAX,
+    BREAK_DURATION_MIN_HOURS, BREAK_DURATION_MAX_HOURS,
     BASE_URL,
 )
 from api import (
@@ -465,8 +467,10 @@ def main():
     fetch_usdc_balance()
     print_status()
 
-    cycle      = 0
-    pair_index = 0
+    cycle         = 0
+    pair_index    = 0
+    next_break_at = random.randint(BREAK_EVERY_CYCLES_MIN, BREAK_EVERY_CYCLES_MAX)
+    log.info(f"    Break pertama dijadwalkan di siklus #{next_break_at}")
 
     while True:
         cycle += 1
@@ -481,6 +485,15 @@ def main():
                 trading_pairs = detect_trading_pairs(all_symbols)
                 log.info(f"    Refreshed: {len(all_symbols)} symbols, "
                          f"{len(trading_pairs)} pairs")
+
+        # ── Random break untuk meniru perilaku trader manusia ────────
+        if cycle >= next_break_at:
+            break_hours = random.uniform(BREAK_DURATION_MIN_HOURS, BREAK_DURATION_MAX_HOURS)
+            break_secs  = break_hours * 3600
+            log.info(f"    😴  BREAK {break_hours:.1f} jam ({break_secs/60:.0f} menit) — bot istirahat...")
+            time.sleep(break_secs)
+            next_break_at = cycle + random.randint(BREAK_EVERY_CYCLES_MIN, BREAK_EVERY_CYCLES_MAX)
+            log.info(f"    ✅  Break selesai! Lanjut trading. Break berikutnya: siklus #{next_break_at}")
 
         symbol = trading_pairs[pair_index % len(trading_pairs)]
         pair_index += 1
